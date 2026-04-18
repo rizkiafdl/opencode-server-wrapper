@@ -1,7 +1,12 @@
 # OpenCode Multi-User Session Manager — Progress Log
 
-**Date**: 2026-04-17  
-**Status**: MVP Working ✓
+**Date**: 2026-04-18  
+**Status**: MVP Working ✓ — Product defined, implementation plan ready
+
+## Related Docs
+- [product-spec.md](product-spec.md) — PM perspective: vision, personas, user journeys, feature list
+- [implementation-plan.md](implementation-plan.md) — Server/orchestrator: phase plan, code sketches, API endpoints, admin dashboard
+- [wiki-layer.md](wiki-layer.md) — Wiki knowledge architecture: AGENTS.md template, directory structure, ingest/query/lint operations
 
 ---
 
