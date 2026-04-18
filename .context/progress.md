@@ -1,164 +1,194 @@
-# OpenCode Multi-User Session Manager — Progress Log
+# OpenWiki — Progress Log
 
-**Date**: 2026-04-18  
-**Status**: MVP Working ✓ — Product defined, implementation plan ready
+**Date**: 2026-04-18
+**Status**: Phase 1 + Phase 2 BUILT ✓ — Full stack end-to-end
 
 ## Related Docs
-- [product-spec.md](product-spec.md) — PM perspective: vision, personas, user journeys, feature list
-- [implementation-plan.md](implementation-plan.md) — Server/orchestrator: phase plan, code sketches, API endpoints, admin dashboard
-- [wiki-layer.md](wiki-layer.md) — Wiki knowledge architecture: AGENTS.md template, directory structure, ingest/query/lint operations
+- [product-spec.md](product-spec.md) — PM perspective: vision, personas, user journeys
+- [implementation-plan.md](implementation-plan.md) — Full technical implementation plan (v0.3)
+- [opencode-customization-guide.md](opencode-customization-guide.md) — OpenCode surfaces guide
 
 ---
 
-## What Was Built
+## Architecture
 
-A local multi-user web interface that manages `opencode serve` processes.
-Each user gets an isolated git worktree and a dedicated opencode process.
-Users interact through a browser-based chat UI on a single machine.
+```
+Browser → FastAPI (port 8000) → opencode-user (port 4096) [user chat sessions]
+                              → opencode-admin (port 4097) [aggregator + quality-check]
+                              → SQLite (/data/opencode.db)
+                              → Git layer (gitpython + subprocess)
+```
 
----
-
-## Stack
-
-| Layer | Tech |
-|---|---|
-| Backend | Python 3.11+ / FastAPI + uvicorn |
-| Frontend | Vanilla HTML + JS (single file, no bundler) |
-| Process management | Python `subprocess` + `os.killpg` |
-| Git isolation | `git worktree` CLI |
-| Streaming | SSE via FastAPI `StreamingResponse` + `httpx` |
+**Session management**: Docker Compose, 2 shared opencode instances (not per-user subprocess).
 
 ---
 
 ## Project Structure
 
 ```
-opencode-manager/
-├── main.py               # FastAPI app — all backend logic
-├── static/
-│   └── index.html        # entire frontend, single file
-├── .context/
-│   └── progress.md       # this file
-├── .env                  # GITHUB_TOKEN, REPO_URL, BASE_REPO_PATH (gitignored)
-├── .env.example          # template
-├── requirements.txt      # fastapi, uvicorn, python-dotenv, httpx
-└── README.md
+paralel-opencode-webserver/
+├── main.py                   # FastAPI — 30 API routes, Phase 1 + Phase 2 complete
+├── db.py                     # SQLite layer (aiosqlite) — 6 tables
+├── opencode_client.py        # httpx clients for opencode-user and opencode-admin
+├── git_ops.py                # git worktree, branch, merge, activity ops
+├── requirements.txt          # fastapi, uvicorn, httpx, aiosqlite, gitpython, textstat
+├── Dockerfile                # FastAPI container
+├── docker-compose.yml        # fastapi + opencode-user + opencode-admin
+├── .env.example              # env var template
+├── opencode-config/
+│   ├── AGENTS.md             # shared system context for all sessions
+│   ├── opencode-user.json    # user instance config (permissions)
+│   ├── opencode-admin.json   # admin instance config (wider permissions)
+│   ├── skills/               # skill .md files (mount into opencode containers)
+│   ├── agents/               # agent .md files
+│   └── commands/             # slash command .md files
+└── frontend/                 # React 18 + Vite SPA
+    ├── package.json
+    ├── vite.config.ts
+    ├── tailwind.config.js
+    └── src/
+        ├── App.tsx            # Router: /login /chat /sessions /skills /admin
+        ├── store/session.ts   # Zustand (username, sessionId, model, agent)
+        ├── api/
+        │   ├── client.ts      # fetch wrapper
+        │   ├── sessions.ts    # TanStack Query hooks
+        │   ├── agents.ts      # agents + providers hooks
+        │   ├── admin.ts       # merge queue, aggregator, analysis hooks
+        │   └── sse.ts         # EventSource hook with rAF batching
+        ├── components/
+        │   ├── chat/
+        │   │   ├── ChatContainer.tsx   # TanStack Virtual message list
+        │   │   ├── MessageBubble.tsx   # react-markdown + memo
+        │   │   ├── MessageInput.tsx    # textarea + send button
+        │   │   ├── AgentPicker.tsx     # dropdown from GET /api/agents
+        │   │   └── ModelPicker.tsx     # dropdown from GET /api/providers
+        │   └── admin/
+        │       ├── MergeQueue.tsx      # diff preview + approve/reject
+        │       ├── SessionMonitor.tsx  # live session table + kill
+        │       ├── AgentRegistry.tsx   # live agent list
+        │       ├── Aggregator.tsx      # trigger + job history
+        │       └── RepoAnalysis.tsx    # NLP metrics + activity table
+        └── pages/
+            ├── Login.tsx      # username form → start session
+            ├── Chat.tsx       # main chat UI with topbar
+            ├── Sessions.tsx   # active sessions list
+            ├── Skills.tsx     # skill browser with markdown viewer
+            └── Admin.tsx      # tabbed admin dashboard (5 tabs)
 ```
 
 ---
 
-## Implemented Features
+## API Routes (all verified)
 
-### Backend (`main.py`)
-
-| Endpoint | Description |
-|---|---|
-| `POST /api/spawn/{username}` | Creates git worktree + spawns `opencode serve`, polls health |
-| `DELETE /api/teardown/{username}` | Pushes branch, kills process group, removes worktree |
-| `GET /api/status` | Lists all active sessions (username, port, branch, worktree, last_active) |
-| `GET /proxy/{username}/event` | SSE stream proxy — streams opencode events to browser |
-| `ANY /proxy/{username}/**` | Generic async HTTP proxy to the user's opencode process |
-
-**Other backend behaviours:**
-- Git worktree creation: checks if `user-{username}` branch exists on remote; checks out if yes, creates new branch if no
-- Health check: polls `GET /localhost:{port}/global/health` up to 10s before returning to client
-- Idle reaper: asyncio background task, runs every 60s, tears down sessions idle > 15 min
-- Process isolation: each opencode spawned with `os.setsid` (new process group) so `os.killpg` kills all children
-- `LOG_LEVEL` env var controls log verbosity (`DEBUG` shows raw SSE chunks)
-
-### Frontend (`static/index.html`)
-
-- Login form → `POST /api/spawn/{username}` → stores username in `localStorage`
-- Auto-reconnect on page load: checks `/api/status` to verify session is alive
-- If session gone (e.g. server restarted), automatically redirects back to login
-- SSE connection via `EventSource` — streams assistant tokens in real time
-- Creates opencode session lazily on first message send, reuses `sessionID` after
-- End Session button → `DELETE /api/teardown` → clears state, shows login
-- Collapsible status panel: shows port, branch, worktree, last active — polls every 10s
-
----
-
-## Key Bug Fixes Applied
-
-### 1. `WORKTREES_DIR` resolving to `/worktrees` (read-only filesystem error)
-**Cause**: `BASE_REPO_PATH=/tmp` — `os.path.dirname("/tmp")` returns `/`  
-**Fix**: Changed `.env` to `BASE_REPO_PATH=/tmp/opencode-repos/base`; added guard in code to handle root-parent edge case; added optional `WORKTREES_PATH` env override
-
-### 2. SSE stream not delivering responses (long wait after sending message)
-**Cause**: Missing anti-buffering headers on the `StreamingResponse`  
-**Fix**: Added `Cache-Control: no-cache`, `X-Accel-Buffering: no`, `Connection: keep-alive` to the SSE proxy response
-
-### 3. 404 retry loop on browser after server restart
-**Cause**: uvicorn `--reload` wipes in-memory sessions; browser `EventSource` retried `/proxy/{user}/event` endlessly  
-**Fix**: Before opening `EventSource`, probe `/api/status` first; after 3 consecutive SSE errors, re-check status and redirect to login if session is gone
-
-### 4. Frontend event parser mismatch (messages sent but no text in UI)
-**Cause**: Frontend was looking for opencode's assumed event format (`type:"part"`, `message.completed`) which does not match the actual opencode SSE protocol  
-**Actual opencode SSE event format** (discovered via `LOG_LEVEL=DEBUG`):
-
-| Event type | Meaning | Relevant field |
+### Session
+| Route | Method | Description |
 |---|---|---|
-| `message.part.delta` | Streaming text token | `properties.delta` (when `properties.field === "text"`) |
-| `session.idle` | Response complete | — |
-| `session.status` | Session busy/idle | `properties.status.type` |
-| `message.part.updated` | Full part snapshot | `properties.part` |
-| `server.heartbeat` | Keep-alive ping | — |
-| `server.connected` | SSE connection established | — |
+| `/api/session/start` | POST | Create worktree + opencode session |
+| `/api/session/end` | POST | Commit + push + add to merge queue |
+| `/api/session/me` | GET | Current user's active session |
+| `/api/session/list` | GET | All active sessions |
+| `/api/session/{id}/touch` | POST | Update last_active |
 
-**Fix**: Rewrote `handleSSEMessage()` to use `message.part.delta` for token streaming and `session.idle` as the completion signal
-
----
-
-## Environment Variables
-
-| Variable | Example value | Description |
+### Chat
+| Route | Method | Description |
 |---|---|---|
-| `REPO_URL` | `https://github.com/org/repo` | Git remote to clone as base repo |
-| `BASE_REPO_PATH` | `/tmp/opencode-repos/base` | Local path for the base clone (must be a subdirectory, not `/tmp` itself) |
-| `GITHUB_TOKEN` | `ghp_xxx` | Token for git HTTPS auth |
-| `HOST` | `0.0.0.0` | Bind address |
-| `PORT` | `8000` | Bind port |
-| `IDLE_TIMEOUT_MINUTES` | `15` | Idle session reap timeout |
-| `OPENCODE_BASE_PORT` | `4100` | Starting port for opencode processes |
-| `WORKTREES_PATH` | *(optional)* | Override default worktrees directory |
-| `LOG_LEVEL` | `INFO` / `DEBUG` | Set to `DEBUG` to see raw SSE chunks |
+| `/api/chat/sse` | GET | SSE proxy from opencode-user → browser |
+| `/api/chat/{id}/message` | POST | Send message to opencode session |
+
+### Agents/Providers/Skills
+| Route | Method | Description |
+|---|---|---|
+| `/api/agents` | GET | Live from opencode-user GET /agents |
+| `/api/providers` | GET | Live from opencode-user GET /providers |
+| `/api/skills` | GET | Filesystem scan of /skills/ |
+| `/api/skills/{id}` | GET | Full skill markdown content |
+
+### Admin
+| Route | Method | Description |
+|---|---|---|
+| `/api/admin/sessions` | GET | All active sessions |
+| `/api/admin/sessions/{user}` | DELETE | Kill session |
+| `/api/admin/queue` | GET | Merge queue by status |
+| `/api/admin/queue/{id}/diff` | GET | Full git diff |
+| `/api/admin/queue/{id}/approve` | POST | git merge + push |
+| `/api/admin/queue/{id}/reject` | POST | Delete remote branch |
+| `/api/admin/aggregate` | POST | Trigger aggregation |
+| `/api/admin/aggregate` | GET | List aggregation jobs |
+| `/api/admin/aggregate/{id}/sse` | GET | SSE stream for aggregation progress |
+| `/api/admin/analysis/activity` | GET | User activity from git log |
+| `/api/admin/analysis/nlp` | GET | textstat NLP metrics |
+| `/api/admin/analysis/quality-check` | POST | Agent-based quality check |
+| `/api/admin/config` | GET/POST | Platform config key-value |
+| `/api/health` | GET | Health of both opencode instances |
 
 ---
 
 ## How to Run
 
+### Local dev (without Docker, opencode running separately)
+
 ```bash
-# Install dependencies
+# 1. Install Python deps
 pip install -r requirements.txt
 
-# Configure
-cp .env.example .env
-# edit .env — set REPO_URL, BASE_REPO_PATH, GITHUB_TOKEN
+# 2. Start opencode instances manually (two terminal tabs)
+opencode serve --port 4096
+opencode serve --port 4097
 
-# Start
+# 3. Configure env
+cp .env.example .env
+# Edit .env — set REPO_URL, GITHUB_TOKEN, OPENCODE_USER_URL=http://localhost:4096
+
+# 4. Build frontend (once, or run dev server separately)
+cd frontend && npm install && npm run build && cd ..
+
+# 5. Start FastAPI
 uvicorn main:app --reload --port 8000
 
-# Open
+# 6. Or run frontend dev server with HMR
+cd frontend && npm run dev   # port 5173, proxied to :8000
+```
+
+### Docker Compose (production)
+
+```bash
+cp .env.example .env
+# Edit .env with API keys and REPO_URL
+
+docker compose up -d
 open http://localhost:8000
 ```
 
 ---
 
-## Out of Scope (MVP)
+## Phase Completion Status
 
-- Authentication / passwords
-- HTTPS / TLS
-- Persistent message history in the browser (opencode stores this internally)
-- Multiple repos per session
-- PR / merge workflow automation
-- Rate limiting
-- Horizontal / multi-machine scaling
+| Phase | Status |
+|---|---|
+| **Phase 1 — Core Platform** | ✅ Complete |
+| **Phase 2 — Admin Basics** | ✅ Complete |
+| **Phase 3 — Branch Aggregator** | ✅ Backend complete, UI complete |
+| **Phase 4 — Repo Analysis** | ✅ Activity + NLP backend, UI complete. Quality-check endpoint stub |
+| **Phase 5 — Skills & Provider Mgmt** | 🔶 Skills browser complete, provider config UI pending |
+
+---
+
+## SQLite Schema
+
+```sql
+sessions         — id, username, worktree, branch, model, agent, created_at, last_active, status
+merge_queue      — id, username, branch, session_id, pushed_at, diff_stat, status
+aggregations     — id, triggered_by, triggered_at, since_date, branches_read, output_branch, opencode_session, status
+analysis_snapshots — id, repo_path, snapshot_at, word_count, readability, file_count, quality_json
+config           — key, value
+skills           — id, name, description, file_path, updated_at
+```
 
 ---
 
 ## Known Limitations
 
-- Sessions are in-memory only — a server restart loses all session state; users must log in again
-- `--reload` flag in development triggers restarts on file changes, clearing sessions
-- No authentication — any username can start a session
-- GitHub token stored in `.env` — ensure `.env` is in `.gitignore`
+- No authentication — username trust model (by design, v1)
+- opencode API shape varies by version — SSE event parsing may need adjustment
+- `frontend/dist/` must be pre-built before `docker compose up` (or add a build step to Dockerfile)
+- Provider Config UI (admin) not yet built — edit `opencode-config/opencode-user.json` manually

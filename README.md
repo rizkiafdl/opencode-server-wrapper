@@ -1,51 +1,193 @@
-# OpenCode Multi-User Session Manager
+# OpenWiki
 
-A local MVP that manages multiple `opencode serve` processes. Each user gets
-an isolated git worktree and a dedicated opencode process. Users interact
-through a browser-based chat UI running on a single machine.
+A self-hosted, multi-user AI workspace — browser-based chat powered by opencode's HTTP API, with git worktree isolation per user and an admin dashboard for merge queue, session monitoring, and branch aggregation.
 
 ---
 
 ## Prerequisites
 
-- Python 3.11+
-- [`opencode`](https://opencode.ai) binary on `PATH` (run `opencode --version` to verify)
-- `git` 2.30+ (for `git worktree` support)
-- A GitHub repository the machine has push access to (for branch persistence)
+| Tool | Version | Check |
+|---|---|---|
+| Python | 3.11+ | `python3 --version` |
+| Node.js | 18+ | `node --version` |
+| git | 2.30+ | `git --version` |
+| opencode | latest | `opencode --version` |
 
 ---
 
-## Setup
+## Install opencode
+
+opencode is the AI execution layer. Install it once globally:
 
 ```bash
-# 1. Clone this repo
-git clone <this-repo-url> opencode-manager
-cd opencode-manager
+# macOS / Linux via npm (recommended)
+npm install -g opencode-ai
 
-# 2. Install Python dependencies
-pip install -r requirements.txt
+# Or via Homebrew (macOS)
+brew install sst/tap/opencode
 
-# 3. Configure environment
-cp .env.example .env
-# Edit .env — set REPO_URL and BASE_REPO_PATH at minimum
-
-# 4. Start the server
-uvicorn main:app --reload --port 8000
-
-# 5. Open the UI
-open http://localhost:8000
+# Verify
+opencode --version
 ```
+
+> **API keys required.** opencode reads provider keys from environment variables.
+> Set at least one before starting:
+>
+> ```bash
+> export ANTHROPIC_API_KEY=sk-ant-xxx
+> # or
+> export OPENAI_API_KEY=sk-xxx
+> # or any other provider — see https://opencode.ai/docs/providers/
+> ```
 
 ---
 
-## Usage
+## Local Dev Setup (no Docker)
 
-1. Open `http://localhost:8000` in a browser.
-2. Enter a username and click **Start Session**.
-   - A git worktree (`user-<name>` branch) is created from the base repo.
-   - An `opencode serve` process is started on a free port.
-3. Type messages in the chat input and press **Enter** or **Send**.
-4. Click **End Session** to push the branch and clean up the process.
+This is the fastest way to run everything on your machine.
+
+### 1. Clone and install dependencies
+
+```bash
+git clone <this-repo> openwiki
+cd openwiki
+
+# Python backend
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# React frontend
+cd frontend
+npm install
+npm run build      # builds to frontend/dist/ — served by FastAPI
+cd ..
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` — minimum required:
+
+```env
+# Your git repo (OpenWiki will clone this as the base repo)
+REPO_URL=https://github.com/your-org/your-repo
+GITHUB_TOKEN=ghp_xxx          # for git HTTPS push auth
+
+# Point FastAPI to local opencode instances (same machine)
+OPENCODE_USER_URL=http://localhost:4096
+OPENCODE_ADMIN_URL=http://localhost:4097
+
+# AI provider key (picked up by opencode)
+ANTHROPIC_API_KEY=sk-ant-xxx
+
+# Local data paths (created automatically)
+DB_PATH=./data/opencode.db
+REPO_PATH=./repos/base
+WORKTREES_PATH=./worktrees
+SKILLS_PATH=./opencode-config/skills
+```
+
+### 3. Start the opencode servers
+
+OpenWiki needs **two** opencode instances running. Open two terminal tabs:
+
+**Terminal 1 — user instance (handles all chat sessions)**
+```bash
+export ANTHROPIC_API_KEY=sk-ant-xxx    # or whichever provider
+opencode serve --port 4096 --hostname 0.0.0.0
+```
+
+**Terminal 2 — admin instance (aggregator + quality-check jobs)**
+```bash
+export ANTHROPIC_API_KEY=sk-ant-xxx
+opencode serve --port 4097 --hostname 0.0.0.0
+```
+
+You should see:
+```
+opencode server listening on http://0.0.0.0:4096
+```
+
+Verify both are healthy:
+```bash
+curl http://localhost:4096/global/health   # → {"healthy": true}
+curl http://localhost:4097/global/health   # → {"healthy": true}
+```
+
+### 4. Start the FastAPI server
+
+```bash
+# activate venv if not already active
+source .venv/bin/activate
+
+uvicorn main:app --reload --port 8000
+```
+
+### 5. (Optional) Frontend dev server with HMR
+
+If you want live-reload on frontend changes instead of rebuilding:
+
+```bash
+# Terminal 3
+cd frontend
+npm run dev      # starts on http://localhost:5173
+                 # proxies /api/* to http://localhost:8000
+```
+
+Then open `http://localhost:5173` instead of `:8000`.
+
+### 6. Open the app
+
+```
+http://localhost:8000
+```
+
+Enter a username → **Start Session** → chat.
+
+---
+
+## Docker Compose Setup (production / team)
+
+Runs everything in containers — no local opencode install needed.
+
+### 1. Configure env
+
+```bash
+cp .env.example .env
+# Edit .env — set REPO_URL, GITHUB_TOKEN, ANTHROPIC_API_KEY
+```
+
+### 2. Build frontend
+
+```bash
+cd frontend && npm install && npm run build && cd ..
+```
+
+### 3. Start all services
+
+```bash
+docker compose up -d
+```
+
+This starts:
+- `fastapi` on port 8000
+- `opencode-user` on port 4096 (all user chat sessions)
+- `opencode-admin` on port 4097 (aggregator + quality-check jobs)
+
+```bash
+docker compose logs -f           # stream all logs
+docker compose logs -f fastapi   # FastAPI only
+docker compose ps                # service status
+
+docker compose restart opencode-user   # restart user instance
+docker compose down                    # stop everything
+```
+
+Open `http://localhost:8000`.
 
 ---
 
@@ -53,13 +195,21 @@ open http://localhost:8000
 
 | Variable | Default | Description |
 |---|---|---|
-| `REPO_URL` | — | Git remote URL to clone as the base repo |
-| `BASE_REPO_PATH` | `/tmp/opencode-repos/base` | Local path for the base clone |
-| `GITHUB_TOKEN` | — | Token used by git for HTTPS auth (set in env or via `gh auth`) |
-| `HOST` | `0.0.0.0` | Bind address for uvicorn |
-| `PORT` | `8000` | Bind port for uvicorn |
-| `IDLE_TIMEOUT_MINUTES` | `15` | Minutes of inactivity before a session is reaped |
-| `OPENCODE_BASE_PORT` | `4100` | Starting port for opencode processes (increments per user) |
+| `OPENCODE_USER_URL` | `http://localhost:4096` | URL of the user opencode instance |
+| `OPENCODE_ADMIN_URL` | `http://localhost:4097` | URL of the admin opencode instance |
+| `OPENCODE_USER_PASSWORD` | — | Password for opencode-user (if set) |
+| `OPENCODE_ADMIN_PASSWORD` | — | Password for opencode-admin (if set) |
+| `ANTHROPIC_API_KEY` | — | Forwarded to opencode containers |
+| `OPENAI_API_KEY` | — | Forwarded to opencode containers |
+| `REPO_URL` | — | Git remote URL (HTTPS or SSH) |
+| `GITHUB_TOKEN` | — | Token for git HTTPS push auth |
+| `DB_PATH` | `./data/opencode.db` | SQLite database path |
+| `REPO_PATH` | `./repos/base` | Base git clone path |
+| `WORKTREES_PATH` | `./worktrees` | Root dir for user git worktrees |
+| `SKILLS_PATH` | `./opencode-config/skills` | Skills markdown files directory |
+| `IDLE_TIMEOUT_MIN` | `15` | Minutes before idle session is reaped |
+| `LOG_LEVEL` | `INFO` | `DEBUG` to see raw SSE chunks |
+| `FRONTEND_DIST` | `frontend/dist` | Path to built React app |
 
 ---
 
@@ -67,48 +217,61 @@ open http://localhost:8000
 
 ```
 Browser
-  │
-  │  HTTP / SSE
+  │ HTTP / SSE
   ▼
-FastAPI (port 8000)
-  ├── POST /api/spawn/{user}     — creates worktree + spawns opencode
-  ├── DELETE /api/teardown/{user}— pushes branch, kills process, removes worktree
-  ├── GET  /api/status           — lists active sessions
-  ├── GET  /proxy/{user}/event   — SSE stream (proxied from opencode)
-  └── ANY  /proxy/{user}/**      — generic HTTP proxy to opencode
-          │
-          │  localhost:{port}
-          ▼
-      opencode serve  (one per user, port 4100+)
-          │
-          │  git worktree
-          ▼
-      /tmp/opencode-repos/
-          ├── base/              — shared bare-ish clone (.git lives here)
-          └── worktrees/
-              ├── alice/         — branch: user-alice
-              └── bob/           — branch: user-bob
+FastAPI (port 8000)            — session CRUD, SSE proxy, git ops, admin API
+  │                    │
+  ▼                    ▼
+opencode-user         opencode-admin
+(port 4096)           (port 4097)
+all chat sessions     aggregator + quality-check jobs
+  │
+  ▼
+Git Layer
+  repos/base/          — shared base clone (main branch)
+  worktrees/alice/     — alice's isolated worktree (branch: user/alice)
+  worktrees/bob/       — bob's isolated worktree  (branch: user/bob)
+  worktrees/agg-date/  — aggregator output worktree
 ```
-
-### Key behaviours
-
-- **One process per user** — each `opencode serve` gets its own port and
-  process group so `SIGTERM` kills the whole tree.
-- **Idle reaper** — a background asyncio task runs every 60 s and tears down
-  sessions idle for more than `IDLE_TIMEOUT_MINUTES`.
-- **Branch persistence** — on teardown the branch is pushed to remote before
-  the worktree is removed, so work is never lost.
-- **No auth for MVP** — usernames are trust-based; add authentication before
-  any multi-tenant deployment.
 
 ---
 
-## Out of scope (MVP)
+## Admin Dashboard
 
-- Authentication / passwords
-- HTTPS / TLS
-- Persistent message history in the browser (opencode stores this internally)
-- Multiple repos per session
-- PR / merge workflow automation
-- Rate limiting or quota enforcement
-- Horizontal / multi-machine scaling
+Visit `/admin` after logging in.
+
+| Tab | What it does |
+|---|---|
+| **Merge Queue** | Review pending user branches — inline diff view, approve (git merge) or reject |
+| **Sessions** | Live table of active sessions — see username, model, idle time; force-kill any session |
+| **Agents** | Live agent list from opencode (`GET /agents`) |
+| **Aggregator** | Trigger cross-branch synthesis via the admin opencode instance |
+| **Analysis** | Git activity metrics + NLP readability scores for the repo |
+
+---
+
+## Team Config (opencode customization)
+
+Put files in `opencode-config/` — they are mounted into both opencode containers:
+
+```
+opencode-config/
+├── AGENTS.md          # system context loaded in every session
+├── opencode-user.json # user instance config (permissions, model)
+├── opencode-admin.json# admin instance config
+├── agents/            # custom agent definitions (.md files)
+├── skills/            # skills loaded on-demand by agents (.md files)
+└── commands/          # slash commands (.md files)
+```
+
+See [.context/opencode-customization-guide.md](.context/opencode-customization-guide.md) for full details.
+
+---
+
+## Out of Scope (v1)
+
+- Authentication / passwords (username trust model)
+- HTTPS / TLS (use a reverse proxy — nginx/Caddy)
+- Real-time collaborative editing
+- GitHub OAuth / SSO
+- Billing / multi-tenancy

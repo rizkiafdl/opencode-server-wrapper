@@ -1,0 +1,67 @@
+version: "3.9"
+
+services:
+  fastapi:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENCODE_USER_URL=http://opencode-user:4096
+      - OPENCODE_ADMIN_URL=http://opencode-admin:4097
+      - OPENCODE_USER_PASSWORD=${OPENCODE_USER_PASSWORD:-}
+      - OPENCODE_ADMIN_PASSWORD=${OPENCODE_ADMIN_PASSWORD:-}
+      - DB_PATH=/data/opencode.db
+      - REPO_PATH=/repos/base
+      - WORKTREES_PATH=/worktrees
+      - SKILLS_PATH=/skills
+      - REPO_URL=${REPO_URL:-}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - IDLE_TIMEOUT_MIN=${IDLE_TIMEOUT_MIN:-15}
+      - FRONTEND_DIST=/app/frontend/dist
+    volumes:
+      - ./data:/data
+      - ./repos:/repos
+      - ./worktrees:/worktrees
+      - ./opencode-config/skills:/skills
+    depends_on:
+      opencode-user:
+        condition: service_started
+      opencode-admin:
+        condition: service_started
+    restart: unless-stopped
+
+  opencode-user:
+    image: ghcr.io/joostme/opencode-docker:latest
+    ports:
+      - "4096:4096"
+    environment:
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_USER_PASSWORD:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - ./worktrees:/worktrees
+      - ./opencode-config/skills:/root/.config/opencode/skills
+      - ./opencode-config/agents:/root/.config/opencode/agents
+      - ./opencode-config/commands:/root/.config/opencode/commands
+      - ./opencode-config/opencode-user.json:/root/.config/opencode/opencode.json
+      - ./opencode-config/AGENTS.md:/root/.config/opencode/AGENTS.md
+    command: ["opencode", "serve", "--port", "4096", "--hostname", "0.0.0.0"]
+    restart: unless-stopped
+    mem_limit: 2g
+
+  opencode-admin:
+    image: ghcr.io/joostme/opencode-docker:latest
+    ports:
+      - "4097:4097"
+    environment:
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_ADMIN_PASSWORD:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    volumes:
+      - ./worktrees:/worktrees
+      - ./opencode-config/skills:/root/.config/opencode/skills
+      - ./opencode-config/agents:/root/.config/opencode/agents
+      - ./opencode-config/opencode-admin.json:/root/.config/opencode/opencode.json
+    command: ["opencode", "serve", "--port", "4097", "--hostname", "0.0.0.0"]
+    restart: unless-stopped
+    mem_limit: 4g

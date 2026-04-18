@@ -1,5 +1,12 @@
 .env
 .context
 __pycache__
-
-
+.DS_Store
+.venv
+data/
+repos/
+worktrees/
+frontend/node_modules/
+frontend/dist/
+*.pyc
+.env.example
