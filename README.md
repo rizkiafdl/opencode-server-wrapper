@@ -98,12 +98,19 @@ OpenWiki needs **two** opencode instances running. Open two terminal tabs:
 **Terminal 1 — user instance (handles all chat sessions)**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-xxx    # or whichever provider
+
+# IMPORTANT: start from the worktrees directory, NOT the web server project root.
+# opencode uses its CWD as the project context for every session.
+# Starting from the wrong directory bloats every message with irrelevant tokens.
+cd worktrees   # or an empty dir like /tmp/oc-workspace
 opencode serve --port 4096 --hostname 0.0.0.0
 ```
 
 **Terminal 2 — admin instance (aggregator + quality-check jobs)**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-xxx
+
+cd repos/base  # admin works against the base repo
 opencode serve --port 4097 --hostname 0.0.0.0
 ```
 

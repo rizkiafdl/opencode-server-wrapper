@@ -42,10 +42,12 @@ async def lifespan(app: FastAPI):
     git_ops.ensure_base_repo()
     reaper = asyncio.create_task(_idle_reaper())
     health = asyncio.create_task(_health_monitor())
+    sse_feed = asyncio.create_task(_run_sse_feed())
     log.info("OpenWiki started")
     yield
     reaper.cancel()
     health.cancel()
+    sse_feed.cancel()
 
 
 app = FastAPI(title="OpenWiki", lifespan=lifespan)
@@ -56,6 +58,43 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── SSE fan-out state ─────────────────────────────────────────────────────────
+
+_sse_subscribers: set[asyncio.Queue] = set()
+
+
+async def _run_sse_feed() -> None:
+    """Single persistent connection to opencode-user /sse; fans out to all browser subscribers."""
+    retry = 0
+    while True:
+        try:
+            async with httpx.AsyncClient(
+                base_url=oc.OPENCODE_USER_URL,
+                headers=oc._auth_header(oc.OPENCODE_USER_PASSWORD),
+                timeout=httpx.Timeout(None),
+            ) as client:
+                async with client.stream("GET", "/event") as resp:
+                    log.info("SSE feed: connected to opencode-user")
+                    retry = 0
+                    async for line in resp.aiter_lines():
+                        text = line + "\n"
+                        for q in list(_sse_subscribers):
+                            try:
+                                q.put_nowait(text)
+                            except asyncio.QueueFull:
+                                _sse_subscribers.discard(q)
+            log.info("SSE feed: stream ended — reconnecting in 2s")
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            delay = min(2 * 2 ** retry, 30)
+            log.warning("SSE feed error: %s — reconnecting in %ds", exc, delay)
+            retry += 1
+            await asyncio.sleep(delay)
+            continue
+        await asyncio.sleep(2)
 
 
 # ── Background tasks ──────────────────────────────────────────────────────────
@@ -196,12 +235,22 @@ async def touch_session(session_id: str):
 
 @app.get("/api/chat/sse")
 async def chat_sse(request: Request):
-    """Proxy SSE stream from opencode-user to browser."""
+    """Fan-out SSE: one opencode connection, N browser subscribers."""
+    q: asyncio.Queue = asyncio.Queue(maxsize=256)
+    _sse_subscribers.add(q)
+
     async def event_stream():
-        async for chunk in oc.stream_user_sse():
-            if await request.is_disconnected():
-                break
-            yield chunk
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    line = await asyncio.wait_for(q.get(), timeout=15)
+                    yield line.encode()
+                except asyncio.TimeoutError:
+                    yield b": keepalive\n\n"
+        finally:
+            _sse_subscribers.discard(q)
 
     return StreamingResponse(
         event_stream(),
@@ -234,7 +283,8 @@ async def send_message(session_id: str, req: SendMessageRequest):
 @app.get("/api/agents")
 async def list_agents():
     try:
-        return await oc.get_agents()
+        status, content = await oc.get_agents_raw()
+        return Response(content=content, media_type="application/json", status_code=status)
     except Exception as e:
         raise HTTPException(502, f"opencode-user unavailable: {e}")
 
@@ -242,7 +292,8 @@ async def list_agents():
 @app.get("/api/providers")
 async def list_providers():
     try:
-        return await oc.get_providers()
+        status, content = await oc.get_providers_raw()
+        return Response(content=content, media_type="application/json", status_code=status)
     except Exception as e:
         raise HTTPException(502, f"opencode-user unavailable: {e}")
 

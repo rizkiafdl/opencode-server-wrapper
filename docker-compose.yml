@@ -34,11 +34,13 @@ services:
     image: ghcr.io/joostme/opencode-docker:latest
     ports:
       - "4096:4096"
+    working_dir: /worktrees
     environment:
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_USER_PASSWORD:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
+      - ./repos:/repos
       - ./worktrees:/worktrees
       - ./opencode-config/skills:/root/.config/opencode/skills
       - ./opencode-config/agents:/root/.config/opencode/agents
@@ -53,11 +55,13 @@ services:
     image: ghcr.io/joostme/opencode-docker:latest
     ports:
       - "4097:4097"
+    working_dir: /repos/base
     environment:
       - OPENCODE_SERVER_PASSWORD=${OPENCODE_ADMIN_PASSWORD:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
+      - ./repos:/repos
       - ./worktrees:/worktrees
       - ./opencode-config/skills:/root/.config/opencode/skills
       - ./opencode-config/agents:/root/.config/opencode/agents

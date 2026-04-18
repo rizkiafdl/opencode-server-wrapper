@@ -61,18 +61,16 @@ async def list_user_sessions() -> list[dict]:
         return r.json()
 
 
-async def get_agents() -> list[dict]:
+async def get_agents_raw() -> tuple[int, bytes]:
     async with _user_client() as c:
         r = await c.get("/agents")
-        r.raise_for_status()
-        return r.json()
+        return r.status_code, r.content
 
 
-async def get_providers() -> list[dict]:
+async def get_providers_raw() -> tuple[int, bytes]:
     async with _user_client() as c:
         r = await c.get("/providers")
-        r.raise_for_status()
-        return r.json()
+        return r.status_code, r.content
 
 
 async def user_health() -> bool:
@@ -90,7 +88,7 @@ async def stream_user_sse() -> AsyncGenerator[bytes, None]:
         headers=_auth_header(OPENCODE_USER_PASSWORD),
         timeout=None,
     ) as c:
-        async with c.stream("GET", "/sse") as resp:
+        async with c.stream("GET", "/event") as resp:
             async for chunk in resp.aiter_bytes():
                 yield chunk
 
